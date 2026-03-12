@@ -43,6 +43,7 @@ class _ServiceSpec:
     config_class: type  # JiraConfig / ConfluenceConfig
     state_key: str  # request.state attribute for caching
     config_attr: str  # MainAppContext attribute for global config
+    base_config_attr: str  # MainAppContext attribute for request-scoped base config
     url_header: str  # X-Atlassian-{Service}-Url
     token_header: str  # X-Atlassian-{Service}-Personal-Token
     filter_kwargs: dict[str, Any]  # e.g. {"projects_filter": None}
@@ -134,6 +135,7 @@ def _jira_spec() -> _ServiceSpec:
         config_class=JiraConfig,
         state_key="jira_fetcher",
         config_attr="full_jira_config",
+        base_config_attr="base_jira_config",
         url_header="X-Atlassian-Jira-Url",
         token_header="X-Atlassian-Jira-Personal-Token",  # noqa: S106
         filter_kwargs={"projects_filter": None},
@@ -155,6 +157,7 @@ def _confluence_spec() -> _ServiceSpec:
         config_class=ConfluenceConfig,
         state_key="confluence_fetcher",
         config_attr="full_confluence_config",
+        base_config_attr="base_confluence_config",
         url_header="X-Atlassian-Confluence-Url",
         token_header="X-Atlassian-Confluence-Personal-Token",  # noqa: S106
         filter_kwargs={"spaces_filter": None},
@@ -182,16 +185,18 @@ def _get_app_lifespan_ctx(ctx: Context) -> MainAppContext | None:
 def _get_global_config(
     ctx: Context, spec: _ServiceSpec
 ) -> JiraConfig | ConfluenceConfig:
-    """Get global config from lifespan context.
+    """Get the best available config from lifespan context.
 
     Raises:
-        ValueError: If the global config is not available.
+        ValueError: If neither a full nor base config is available.
     """
     app_ctx = _get_app_lifespan_ctx(ctx)
     config = getattr(app_ctx, spec.config_attr, None) if app_ctx else None
     if not config:
+        config = getattr(app_ctx, spec.base_config_attr, None) if app_ctx else None
+    if not config:
         raise ValueError(
-            f"{spec.name} global configuration (URL, SSL) is not "
+            f"{spec.name} global/base configuration (URL, SSL) is not "
             "available from lifespan context."
         )
     return config

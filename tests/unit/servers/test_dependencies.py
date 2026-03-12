@@ -100,7 +100,10 @@ def config_factory():
             """Create a MainAppContext instance."""
             defaults = {
                 "full_jira_config": jira_config or ConfigFactory.create_jira_config(),
+                "base_jira_config": jira_config or ConfigFactory.create_jira_config(),
                 "full_confluence_config": confluence_config
+                or ConfigFactory.create_confluence_config(),
+                "base_confluence_config": confluence_config
                 or ConfigFactory.create_confluence_config(),
                 "read_only": False,
                 "enabled_tools": ["jira_get_issue", "confluence_get_page"],
@@ -742,7 +745,7 @@ class TestGetJiraFetcher:
             ("validation_failure", "Invalid user Jira token or configuration"),
             (
                 "missing_lifespan_context",
-                "Jira global configuration.*is not available from lifespan context",
+                "Jira global/base configuration.*is not available from lifespan context",
             ),
         ],
     )
@@ -1135,7 +1138,7 @@ class TestGetConfluenceFetcher:
             ("validation_failure", "Invalid user Confluence token or configuration"),
             (
                 "missing_lifespan_context",
-                "Confluence global configuration.*is not available from lifespan context",
+                "Confluence global/base configuration.*is not available from lifespan context",
             ),
         ],
     )
@@ -1288,6 +1291,48 @@ class TestBasicAuthMultiUser:
         assert called_config.api_token == "user-api-token"
 
     @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.JiraFetcher")
+    async def test_jira_basic_auth_fetcher_creation_with_base_config_only(
+        self,
+        mock_jira_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """Test basic auth fetcher creation when only base Jira config is available."""
+        mock_request.state.jira_fetcher = None
+        mock_request.state.confluence_fetcher = None
+        mock_request.state.atlassian_service_headers = {}
+        mock_request.state.user_atlassian_auth_type = "basic"
+        mock_request.state.user_atlassian_email = "user@example.com"
+        mock_request.state.user_atlassian_api_token = "user-api-token"
+        mock_request.state.user_atlassian_token = None
+        mock_request.state.user_atlassian_cloud_id = None
+        mock_get_http_request.return_value = mock_request
+
+        app_context = config_factory.create_app_context(
+            jira_config=None,
+            confluence_config=None,
+            full_jira_config=None,
+            base_jira_config=config_factory.create_jira_config(),
+            full_confluence_config=None,
+            base_confluence_config=None,
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_fetcher(JiraFetcher)
+        mock_jira_fetcher_class.return_value = mock_fetcher
+
+        result = await get_jira_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_jira_fetcher_class.call_args[1]["config"]
+        assert called_config.auth_type == "basic"
+        assert called_config.username == "user@example.com"
+        assert called_config.api_token == "user-api-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
     @patch("mcp_atlassian.servers.dependencies.ConfluenceFetcher")
     async def test_confluence_basic_auth_fetcher_creation(
         self,
@@ -1320,6 +1365,48 @@ class TestBasicAuthMultiUser:
         assert mock_request.state.confluence_fetcher == mock_fetcher
         mock_confluence_fetcher_class.assert_called_once()
 
+        called_config = mock_confluence_fetcher_class.call_args[1]["config"]
+        assert called_config.auth_type == "basic"
+        assert called_config.username == "user@example.com"
+        assert called_config.api_token == "user-api-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.ConfluenceFetcher")
+    async def test_confluence_basic_auth_fetcher_creation_with_base_config_only(
+        self,
+        mock_confluence_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """Test basic auth fetcher creation when only base Confluence config is available."""
+        mock_request.state.jira_fetcher = None
+        mock_request.state.confluence_fetcher = None
+        mock_request.state.atlassian_service_headers = {}
+        mock_request.state.user_atlassian_auth_type = "basic"
+        mock_request.state.user_atlassian_email = "user@example.com"
+        mock_request.state.user_atlassian_api_token = "user-api-token"
+        mock_request.state.user_atlassian_token = None
+        mock_request.state.user_atlassian_cloud_id = None
+        mock_get_http_request.return_value = mock_request
+
+        app_context = config_factory.create_app_context(
+            jira_config=None,
+            confluence_config=None,
+            full_jira_config=None,
+            base_jira_config=None,
+            full_confluence_config=None,
+            base_confluence_config=config_factory.create_confluence_config(),
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_fetcher(ConfluenceFetcher)
+        mock_confluence_fetcher_class.return_value = mock_fetcher
+
+        result = await get_confluence_fetcher(mock_context)
+
+        assert result == mock_fetcher
         called_config = mock_confluence_fetcher_class.call_args[1]["config"]
         assert called_config.auth_type == "basic"
         assert called_config.username == "user@example.com"

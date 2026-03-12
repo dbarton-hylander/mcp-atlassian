@@ -16,6 +16,8 @@ class TestMainAppContext:
 
         assert context.full_jira_config is None
         assert context.full_confluence_config is None
+        assert context.base_jira_config is None
+        assert context.base_confluence_config is None
         assert context.read_only is False
         assert context.enabled_tools is None
 
@@ -40,6 +42,8 @@ class TestMainAppContext:
         context = MainAppContext(
             full_jira_config=jira_config,
             full_confluence_config=confluence_config,
+            base_jira_config=jira_config,
+            base_confluence_config=confluence_config,
             read_only=True,
             enabled_tools=enabled_tools,
         )
@@ -47,6 +51,8 @@ class TestMainAppContext:
         # Assert
         assert context.full_jira_config is jira_config
         assert context.full_confluence_config is confluence_config
+        assert context.base_jira_config is jira_config
+        assert context.base_confluence_config is confluence_config
         assert context.read_only is True
         assert context.enabled_tools == enabled_tools
 
@@ -65,6 +71,8 @@ class TestMainAppContext:
         # Assert
         assert context.full_jira_config is jira_config
         assert context.full_confluence_config is None
+        assert context.base_jira_config is None
+        assert context.base_confluence_config is None
         assert context.read_only is True
         assert context.enabled_tools is None
 
@@ -158,6 +166,8 @@ class TestMainAppContext:
         assert "MainAppContext" in str_repr
         assert "full_jira_config=None" in str_repr
         assert "full_confluence_config=None" in str_repr
+        assert "base_jira_config=None" in str_repr
+        assert "base_confluence_config=None" in str_repr
         assert "read_only=False" in str_repr
         assert "enabled_tools=None" in str_repr
 

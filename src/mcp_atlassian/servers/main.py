@@ -34,6 +34,7 @@ from mcp_atlassian.utils.oauth import (
     CLOUD_TOKEN_URL,
     DC_AUTHORIZE_PATH,
     DC_TOKEN_PATH,
+    OAuthConfig,
 )
 from mcp_atlassian.utils.token_verifier import AtlassianOpaqueTokenVerifier
 from mcp_atlassian.utils.tools import get_enabled_tools, should_include_tool
@@ -114,6 +115,92 @@ def _sanitize_schema_for_compatibility(tool: MCPTool) -> MCPTool:
     return tool
 
 
+def _build_base_oauth_config(service_url: str) -> OAuthConfig:
+    """Create a minimal OAuth config for request-scoped credentials.
+
+    This preserves routing details without introducing global credentials.
+    """
+    if is_atlassian_cloud_url(service_url):
+        return OAuthConfig(
+            client_id="",
+            client_secret="",
+            redirect_uri="",
+            scope="",
+            cloud_id=os.getenv("ATLASSIAN_OAUTH_CLOUD_ID") or None,
+        )
+
+    return OAuthConfig(
+        client_id="",
+        client_secret="",
+        redirect_uri="",
+        scope="",
+        base_url=service_url,
+    )
+
+
+def _load_base_jira_config() -> JiraConfig | None:
+    """Load a non-secret Jira base config for request-scoped auth."""
+    url = os.getenv("JIRA_URL")
+    if not url:
+        return None
+
+    timeout = 75
+    if os.getenv("JIRA_TIMEOUT") and os.getenv("JIRA_TIMEOUT", "").isdigit():
+        timeout = int(os.getenv("JIRA_TIMEOUT", "75"))
+
+    return JiraConfig(
+        url=url,
+        auth_type="oauth",
+        oauth_config=_build_base_oauth_config(url),
+        ssl_verify=is_env_truthy("JIRA_SSL_VERIFY", "true"),
+        projects_filter=os.getenv("JIRA_PROJECTS_FILTER"),
+        http_proxy=os.getenv("JIRA_HTTP_PROXY", os.getenv("HTTP_PROXY")),
+        https_proxy=os.getenv("JIRA_HTTPS_PROXY", os.getenv("HTTPS_PROXY")),
+        no_proxy=os.getenv("JIRA_NO_PROXY", os.getenv("NO_PROXY")),
+        socks_proxy=os.getenv("JIRA_SOCKS_PROXY", os.getenv("SOCKS_PROXY")),
+        custom_headers=None,
+        disable_jira_markup_translation=(
+            os.getenv("DISABLE_JIRA_MARKUP_TRANSLATION", "false").lower()
+            == "true"
+        ),
+        client_cert=os.getenv("JIRA_CLIENT_CERT"),
+        client_key=os.getenv("JIRA_CLIENT_KEY"),
+        client_key_password=os.getenv("JIRA_CLIENT_KEY_PASSWORD"),
+        timeout=timeout,
+    )
+
+
+def _load_base_confluence_config() -> ConfluenceConfig | None:
+    """Load a non-secret Confluence base config for request-scoped auth."""
+    url = os.getenv("CONFLUENCE_URL")
+    if not url:
+        return None
+
+    timeout = 75
+    if (
+        os.getenv("CONFLUENCE_TIMEOUT")
+        and os.getenv("CONFLUENCE_TIMEOUT", "").isdigit()
+    ):
+        timeout = int(os.getenv("CONFLUENCE_TIMEOUT", "75"))
+
+    return ConfluenceConfig(
+        url=url,
+        auth_type="oauth",
+        oauth_config=_build_base_oauth_config(url),
+        ssl_verify=is_env_truthy("CONFLUENCE_SSL_VERIFY", "true"),
+        spaces_filter=os.getenv("CONFLUENCE_SPACES_FILTER"),
+        http_proxy=os.getenv("CONFLUENCE_HTTP_PROXY", os.getenv("HTTP_PROXY")),
+        https_proxy=os.getenv("CONFLUENCE_HTTPS_PROXY", os.getenv("HTTPS_PROXY")),
+        no_proxy=os.getenv("CONFLUENCE_NO_PROXY", os.getenv("NO_PROXY")),
+        socks_proxy=os.getenv("CONFLUENCE_SOCKS_PROXY", os.getenv("SOCKS_PROXY")),
+        custom_headers=None,
+        client_cert=os.getenv("CONFLUENCE_CLIENT_CERT"),
+        client_key=os.getenv("CONFLUENCE_CLIENT_KEY"),
+        client_key_password=os.getenv("CONFLUENCE_CLIENT_KEY_PASSWORD"),
+        timeout=timeout,
+    )
+
+
 async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
@@ -128,6 +215,8 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict[str,
 
     loaded_jira_config: JiraConfig | None = None
     loaded_confluence_config: ConfluenceConfig | None = None
+    base_jira_config = _load_base_jira_config()
+    base_confluence_config = _load_base_confluence_config()
 
     if services.get("jira"):
         try:
@@ -143,6 +232,11 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict[str,
                 )
         except Exception as e:
             logger.error(f"Failed to load Jira configuration: {e}", exc_info=True)
+    elif base_jira_config is not None:
+        logger.info(
+            "Jira base configuration loaded without global credentials. "
+            "Request-scoped HTTP auth can enable Jira tools."
+        )
 
     if services.get("confluence"):
         try:
@@ -158,10 +252,17 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict[str,
                 )
         except Exception as e:
             logger.error(f"Failed to load Confluence configuration: {e}", exc_info=True)
+    elif base_confluence_config is not None:
+        logger.info(
+            "Confluence base configuration loaded without global credentials. "
+            "Request-scoped HTTP auth can enable Confluence tools."
+        )
 
     app_context = MainAppContext(
         full_jira_config=loaded_jira_config,
         full_confluence_config=loaded_confluence_config,
+        base_jira_config=base_jira_config,
+        base_confluence_config=base_confluence_config,
         read_only=read_only,
         enabled_tools=enabled_tools,
         enabled_toolsets=enabled_toolsets,
@@ -241,6 +342,7 @@ class AtlassianMCP(FastMCP[MainAppContext]):
         )
 
         header_based_services = {"jira": False, "confluence": False}
+        request_auth_available = False
         request = getattr(req_context, "request", None)
         if request is not None:
             service_headers = getattr(request.state, "atlassian_service_headers", {})
@@ -249,9 +351,13 @@ class AtlassianMCP(FastMCP[MainAppContext]):
                 logger.debug(
                     f"Header-based service availability: {header_based_services}"
                 )
+            request_auth_available = (
+                getattr(request.state, "user_atlassian_auth_type", None)
+                in {"basic", "oauth", "pat"}
+            )
 
         logger.debug(
-            f"_list_tools_mcp: read_only={read_only}, enabled_tools_filter={enabled_tools_filter}, header_services={header_based_services}"
+            f"_list_tools_mcp: read_only={read_only}, enabled_tools_filter={enabled_tools_filter}, header_services={header_based_services}, request_auth_available={request_auth_available}"
         )
 
         all_tools: dict[str, FastMCPTool] = await self.get_tools()
@@ -284,12 +390,20 @@ class AtlassianMCP(FastMCP[MainAppContext]):
             is_confluence_tool = "confluence" in tool_tags
             service_configured_and_available = True
             if app_lifespan_state:
+                jira_base_available = app_lifespan_state.base_jira_config is not None
+                confluence_base_available = (
+                    app_lifespan_state.base_confluence_config is not None
+                )
                 jira_available = (
                     app_lifespan_state.full_jira_config is not None
-                ) or header_based_services.get("jira", False)
+                ) or header_based_services.get("jira", False) or (
+                    request_auth_available and jira_base_available
+                )
                 confluence_available = (
                     app_lifespan_state.full_confluence_config is not None
-                ) or header_based_services.get("confluence", False)
+                ) or header_based_services.get("confluence", False) or (
+                    request_auth_available and confluence_base_available
+                )
 
                 if is_jira_tool and not jira_available:
                     logger.debug(
